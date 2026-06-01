@@ -9,6 +9,7 @@ const { sanitizeResultFolderComponent, resultOutputDir, unpackResultArchive, nor
 const { renderStatusLine } = require("../src/status");
 const { taskLine } = require("../src/tasks");
 const { parseSubmitResponse } = require("../src/api");
+const { isTerminalSessionState } = require("../src/flow");
 const { parseArgs } = require("../src/cli");
 
 runTest("sanitizes result folder names", () => {
@@ -73,6 +74,10 @@ runTest("reads decision url from environment only", () => {
       process.env.TEDLINK_BASE_URL = previous;
     }
   }
+});
+
+runTest("completed with warnings is terminal", () => {
+  assert.equal(isTerminalSessionState("completed_with_warnings"), true);
 });
 
 function runTest(name, fn) {

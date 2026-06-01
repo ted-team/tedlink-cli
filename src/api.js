@@ -127,7 +127,7 @@ function cancelSession(decisionUrl, sessionId, reason) {
 }
 
 function isTerminalState(state) {
-  return ["completed", "failed", "cancelled"].includes(String(state || "").trim());
+  return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(state || "").trim());
 }
 
 function envValue(name) {
