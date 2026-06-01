@@ -1,0 +1,31 @@
+{
+  "name": "tedlink-cli",
+  "version": "0.1.0",
+  "description": "TedLink CLI client for Node.js",
+  "type": "commonjs",
+  "main": "./src/main.js",
+  "bin": {
+    "tedlink": "src/main.js"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
+  },
+  "files": [
+    "src",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "scripts": {
+    "build": "npm run check",
+    "check": "for f in src/*.js test/*.js; do node --check \"$f\" || exit 1; done",
+    "verify": "npm run build && npm test",
+    "prepack": "npm run verify",
+    "publish:dry-run": "npm publish --dry-run",
+    "release:npm": "npm publish",
+    "test": "node test/cli.test.js",
+    "start": "./src/main.js"
+  }
+}
