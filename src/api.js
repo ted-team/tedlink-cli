@@ -38,7 +38,7 @@ function submitRequest(
   );
   const sessionPromise = sessionId
     ? recoverSession(decisionUrl, sessionId, mac)
-    : createSession(decisionUrl, user, mac);
+    : createSession(decisionUrl, user, mac, prompt);
   return sessionPromise
     .then((session) => executeChat(
       decisionUrl,
@@ -107,13 +107,17 @@ async function pollSession(decisionUrl, sessionId, timeoutMs, pollIntervalMs, on
   throw new Error("session stream ended before terminal status");
 }
 
-function createSession(decisionUrl, user, mac) {
+function createSession(decisionUrl, user, mac, initialPrompt = "") {
   return httpRequest(
     decisionUrl,
     "POST",
     "/api/v3/session/create",
     "application/json",
-    Buffer.from(JSON.stringify({ username: user, mac_address: mac })),
+    Buffer.from(JSON.stringify({
+      username: user,
+      mac_address: mac,
+      initial_prompt: initialPrompt,
+    })),
   ).then(parseJsonResponse("/api/v3/session/create"));
 }
 
@@ -264,6 +268,11 @@ function normalizeV3SessionStatus(value) {
   const progress = Number(value.progress || 0);
   const progressSummary = progress > 0 ? `${state || "unknown"} ${progress}%` : (state || "unknown");
   const history = Array.isArray(value.history_summary) ? value.history_summary : [];
+  const prompt = firstNonEmptyString(
+    value.initial_prompt,
+    value.prompt_summary,
+    firstUserHistoryContent(history),
+  );
   const planEvents = history
     .filter((item) => item.role === "assistant" && item.content)
     .map((item) => ({
@@ -276,13 +285,16 @@ function normalizeV3SessionStatus(value) {
   return normalizeSessionStatus({
     session: {
       session_id: sessionId,
-      prompt: firstUserHistoryContent(history),
+      prompt,
       state,
       workspace: {
         session_dir: value.workspace_path || "",
         workspace_dir: value.workspace_path || "",
       },
-      metadata: {},
+      metadata: {
+        prompt_summary: value.prompt_summary || prompt,
+        server_context: value.context_info || {},
+      },
     },
     todos: [
       {
@@ -318,6 +330,16 @@ function normalizeV3SessionStatus(value) {
 function firstUserHistoryContent(history) {
   const entry = history.find((item) => item.role === "user" && item.content);
   return entry ? String(entry.content || "") : "";
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const text = String(value || "").trim();
+    if (text) {
+      return text;
+    }
+  }
+  return "";
 }
 
 function parseSessionStatusResponse(response) {

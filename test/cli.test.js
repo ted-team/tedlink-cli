@@ -12,7 +12,8 @@ const { taskLine } = require("../src/tasks");
 const { buildSubmitPayload, parseSubmitResponse, parseSseEvents, normalizeV3SubmitResponse } = require("../src/api");
 const { authTokenFromEnv } = require("../src/http");
 const { isTerminalSessionState, isPauseSessionState } = require("../src/flow");
-const { parseArgs } = require("../src/cli");
+const { parseArgs, resolveResumeSession } = require("../src/cli");
+const { buildSessionRecord, latestSession, listSessions, promptSummary, upsertSession } = require("../src/session_store");
 
 runTest("sanitizes result folder names", () => {
   assert.equal(sanitizeResultFolderComponent("五管OTA设计"), "五管ota设计");
@@ -113,6 +114,68 @@ runTest("reads decision url from environment only", () => {
     } else {
       process.env.TEDLINK_BASE_URL = previous;
     }
+  }
+});
+
+runTest("parses session list command", () => {
+  const args = parseArgs(["session", "list", "--output", "json"]);
+  assert.equal(args.command, "session-list");
+  assert.equal(args.output, "json");
+});
+
+runTest("parses resume flag with optional session id", () => {
+  let args = parseArgs(["--resume", "--prompt", "继续优化"]);
+  assert.equal(args.resume, true);
+  assert.equal(args.resume_session_id, null);
+  args = parseArgs(["--resume", "s1", "--prompt", "继续优化"]);
+  assert.equal(args.resume, true);
+  assert.equal(args.resume_session_id, "s1");
+  args = parseArgs(["--resume=s2", "--prompt", "继续优化"]);
+  assert.equal(args.resume, true);
+  assert.equal(args.resume_session_id, "s2");
+});
+
+runTest("persists session list records with prompt summaries", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tedlink-store-"));
+  const storePath = path.join(root, "sessions.json");
+  const record = buildSessionRecord({
+    sessionId: "s1",
+    prompt: "帮我设计一个五管运算放大器，要求有网表和仿真波形和报告",
+    decisionUrl: "http://127.0.0.1:9543",
+    workspaceDir: "/tmp/work",
+    state: "executing",
+  });
+  upsertSession(record, storePath);
+  const sessions = listSessions(storePath);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].session_id, "s1");
+  assert.equal(sessions[0].prompt_summary, promptSummary(record.prompt));
+});
+
+runTest("resolves latest resume session from TEDLINK_HOME", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tedlink-home-"));
+  const previousHome = process.env.TEDLINK_HOME;
+  process.env.TEDLINK_HOME = root;
+  try {
+    upsertSession(buildSessionRecord({
+      sessionId: "old",
+      prompt: "old prompt",
+      decisionUrl: "http://old",
+      workspaceDir: "/tmp/old",
+      updatedAt: "2026-01-01T00:00:00.000Z",
+    }));
+    upsertSession(buildSessionRecord({
+      sessionId: "new",
+      prompt: "new prompt",
+      decisionUrl: "http://new",
+      workspaceDir: "/tmp/new",
+      updatedAt: "2026-01-02T00:00:00.000Z",
+    }));
+    assert.equal(latestSession().session_id, "new");
+    assert.equal(resolveResumeSession({ resume_session_id: null }).session_id, "new");
+    assert.equal(resolveResumeSession({ resume_session_id: "old" }).session_id, "old");
+  } finally {
+    restoreEnv("TEDLINK_HOME", previousHome);
   }
 });
 
