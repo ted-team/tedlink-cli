@@ -857,12 +857,12 @@ function printStreamSection(section) {
   }
   currentStreamSection = section;
   const label = {
-    plan: "Plan",
-    tool: "Tool",
-    task: "Task",
-    subtask: "Subtask",
-    completed: "Completed",
-    failed: "Failed",
+    plan: "## Plan",
+    tool: "## Progress",
+    task: "## Task",
+    subtask: "## Subtask",
+    completed: "## Completed",
+    failed: "## Failed",
   }[section] || section;
   process.stdout.write(`\n${label}\n`);
 }

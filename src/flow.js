@@ -200,7 +200,21 @@ function activityActionLabel(action) {
       return "output:";
     case "claude_tool_use":
     case "claude_tool_result":
+    case "tool":
+    case "tools":
       return "tool:";
+    case "plan":
+      return "plan:";
+    case "task":
+      return "task:";
+    case "subtask":
+      return "subtask:";
+    case "progress":
+      return "progress:";
+    case "completed":
+      return "completed:";
+    case "failed":
+      return "failed:";
     case "task_running":
       return "running:";
     case "task_completed":

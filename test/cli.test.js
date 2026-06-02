@@ -90,6 +90,65 @@ runTest("raises tedlink-server SSE error events", () => {
   ), /Claude API request failed/);
 });
 
+runTest("normalizes staged executor history into activity", () => {
+  const { parseSessionStatusResponse } = require("../src/api");
+  const status = parseSessionStatusResponse(Buffer.from(JSON.stringify({
+    session_id: "s1",
+    status: "EXECUTING",
+    progress: 20,
+    workspace_path: "/tmp/work",
+    artifact_dir: "artifacts",
+    initial_prompt: "按照计算参考文档执行参数计算",
+    history_summary: [
+      {
+        role: "executor",
+        created_at: "2026-06-02T00:00:00Z",
+        content: [
+          "[PLAN]",
+          "1. 创建 calculation_record.md",
+          "[TASK]",
+          "运行第一轮仿真",
+          "[TOOLS]",
+          "第一轮参数 gm/id=12，增益不足，下一轮增大尾电流。",
+          "[SUBTASK]",
+          "更新 DESIGN_MAP 参数",
+          "[COMPLETED]",
+          "完成第一轮记录。",
+        ].join("\n"),
+      },
+    ],
+  })));
+  assert.deepEqual(status.activity.map((item) => item.action), ["plan", "task", "tool", "subtask", "completed"]);
+  assert.match(status.activity[2].message, /下一轮增大尾电流/);
+});
+
+runTest("normalizes markdown staged executor history into activity", () => {
+  const { parseSessionStatusResponse } = require("../src/api");
+  const status = parseSessionStatusResponse(Buffer.from(JSON.stringify({
+    session_id: "s1",
+    status: "EXECUTING",
+    workspace_path: "/tmp/work",
+    history_summary: [
+      {
+        role: "executor",
+        content: [
+          "## Plan",
+          "- Goal: 执行参数计算",
+          "## Task",
+          "- Current task: 第一轮仿真",
+          "## Progress",
+          "- Key result: 增益不足",
+          "- Next direction: 增大尾电流",
+          "## Completed",
+          "- Result: 已记录 calculation_record.md",
+        ].join("\n"),
+      },
+    ],
+  })));
+  assert.deepEqual(status.activity.map((item) => item.action), ["plan", "task", "tool", "completed"]);
+  assert.match(status.activity[2].message, /Next direction/);
+});
+
 runTest("defaults Claude model to claude-sonnet-4-6", () => {
   const previous = process.env.ANTHROPIC_MODEL;
   delete process.env.ANTHROPIC_MODEL;

@@ -273,15 +273,7 @@ function normalizeV3SessionStatus(value) {
     value.prompt_summary,
     firstUserHistoryContent(history),
   );
-  const planEvents = history
-    .filter((item) => item.role === "assistant" && item.content)
-    .map((item) => ({
-      time: String(item.created_at || ""),
-      actor: "executor",
-      level: "info",
-      action: "plan",
-      message: String(item.content || ""),
-    }));
+  const activityEvents = history.flatMap(historyActivityEvents);
   return normalizeSessionStatus({
     session: {
       session_id: sessionId,
@@ -313,7 +305,7 @@ function normalizeV3SessionStatus(value) {
       completed: state === "completed" ? 1 : 0,
       failed: ["failed", "cancelled"].includes(state) ? 1 : 0,
     },
-    activity: planEvents,
+    activity: activityEvents,
     result_files: value.artifact_dir ? [{ path: value.artifact_dir }] : [],
     result_archive: value.artifact_dir
       ? {
@@ -342,6 +334,66 @@ function firstNonEmptyString(...values) {
   return "";
 }
 
+function historyActivityEvents(item) {
+  const role = String(item.role || "").trim();
+  const content = String(item.content || "").trim();
+  if (!content || !["assistant", "executor"].includes(role)) {
+    return [];
+  }
+  const time = String(item.created_at || "");
+  const events = parseStageEvents(content).map((event) => ({
+    time,
+    actor: "executor",
+    level: event.event === "failed" ? "error" : "info",
+    action: event.event,
+    message: event.content,
+  }));
+  if (events.length > 0) {
+    return events;
+  }
+  return [{
+    time,
+    actor: "executor",
+    level: "info",
+    action: role === "assistant" ? "plan" : "progress",
+    message: content,
+  }];
+}
+
+function parseStageEvents(content) {
+  const text = String(content || "");
+  const markerPattern = /(?:^|\n)\s*(?:#{2,3}\s*(Plan|Task|Subtask|Progress|Completed|Failed)\b|\[(PLAN|TASK|SUBTASK|TOOLS?|COMPLETED|FAILED|RESPONSE)\])\s*/ig;
+  const matches = Array.from(text.matchAll(markerPattern));
+  if (matches.length === 0) {
+    return [];
+  }
+  const events = [];
+  for (let i = 0; i < matches.length; i += 1) {
+    const match = matches[i];
+    const next = matches[i + 1];
+    const rawStage = String(match[1] || match[2] || "").toLowerCase();
+    const body = text.slice(match.index + match[0].length, next ? next.index : text.length).trim();
+    if (!body) {
+      continue;
+    }
+    events.push({
+      event: normalizeStageEvent(rawStage),
+      content: body,
+    });
+  }
+  return events;
+}
+
+function normalizeStageEvent(stage) {
+  if (stage === "tools" || stage === "tool" || stage === "progress") {
+    return "tool";
+  }
+  if (stage === "response") {
+    return "completed";
+  }
+  return stage;
+}
+
 function parseSessionStatusResponse(response) {
   let value;
   try {
@@ -351,6 +403,9 @@ function parseSessionStatusResponse(response) {
   }
   if (typeof value.error === "string") {
     throw new Error(`TedLink status failed: ${value.error}; response=${responsePreview(response)}`);
+  }
+  if (value && typeof value.session_id === "string" && typeof value.status === "string") {
+    return normalizeV3SessionStatus(value);
   }
   return normalizeSessionStatus(value);
 }
