@@ -9,8 +9,9 @@ const zlib = require("zlib");
 const { sanitizeResultFolderComponent, resultOutputDir, unpackResultArchive, normalizeMacIdentity } = require("../src/output");
 const { renderStatusLine } = require("../src/status");
 const { taskLine } = require("../src/tasks");
-const { parseSubmitResponse, parseSseEvents } = require("../src/api");
-const { isTerminalSessionState } = require("../src/flow");
+const { buildSubmitPayload, parseSubmitResponse, parseSseEvents, normalizeV3SubmitResponse } = require("../src/api");
+const { authTokenFromEnv } = require("../src/http");
+const { isTerminalSessionState, isPauseSessionState } = require("../src/flow");
 const { parseArgs } = require("../src/cli");
 
 runTest("sanitizes result folder names", () => {
@@ -81,6 +82,24 @@ runTest("parses tedlink-server SSE data events", () => {
   assert.equal(events[1].progress, 30);
 });
 
+runTest("raises tedlink-server SSE error events", () => {
+  assert.throws(() => normalizeV3SubmitResponse(
+    { session_id: "s1", prompt: "prompt" },
+    [{ event: "error", content: "Claude API request failed" }],
+  ), /Claude API request failed/);
+});
+
+runTest("defaults Claude model to claude-sonnet-4-6", () => {
+  const previous = process.env.ANTHROPIC_MODEL;
+  delete process.env.ANTHROPIC_MODEL;
+  try {
+    const payload = buildSubmitPayload("prompt", null, "user", "mac", true, true, true, [], [], ".", false);
+    assert.equal(payload.model, "claude-sonnet-4-6");
+  } finally {
+    restoreEnv("ANTHROPIC_MODEL", previous);
+  }
+});
+
 runTest("reads decision url from environment only", () => {
   const previous = process.env.TEDLINK_BASE_URL;
   process.env.TEDLINK_BASE_URL = "http://127.0.0.1:9543";
@@ -101,6 +120,25 @@ runTest("completed with warnings is terminal", () => {
   assert.equal(isTerminalSessionState("completed_with_warnings"), true);
 });
 
+runTest("waiting executor and waiting input are pause states", () => {
+  assert.equal(isPauseSessionState("WAITING_EXECUTOR"), true);
+  assert.equal(isPauseSessionState("waiting_input"), true);
+  assert.equal(isPauseSessionState("running"), false);
+});
+
+runTest("uses TEDLINK_AUTH_TOKEN for HTTP auth", () => {
+  const previousAuth = process.env.TEDLINK_AUTH_TOKEN;
+  const previousLegacy = process.env.TEDLINK_TOKEN;
+  process.env.TEDLINK_AUTH_TOKEN = "auth-token";
+  process.env.TEDLINK_TOKEN = "legacy-token";
+  try {
+    assert.deepEqual(authTokenFromEnv(), { name: "TEDLINK_AUTH_TOKEN", value: "auth-token" });
+  } finally {
+    restoreEnv("TEDLINK_AUTH_TOKEN", previousAuth);
+    restoreEnv("TEDLINK_TOKEN", previousLegacy);
+  }
+});
+
 function runTest(name, fn) {
   try {
     fn();
@@ -109,6 +147,14 @@ function runTest(name, fn) {
     console.error(`not ok - ${name}`);
     console.error(err && err.stack ? err.stack : String(err));
     process.exitCode = 1;
+  }
+}
+
+function restoreEnv(name, value) {
+  if (value === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = value;
   }
 }
 

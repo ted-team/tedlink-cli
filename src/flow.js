@@ -9,6 +9,10 @@ function isTerminalSessionState(value) {
   return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(value || "").trim().toLowerCase());
 }
 
+function isPauseSessionState(value) {
+  return ["waiting_input", "waiting_executor"].includes(String(value || "").trim().toLowerCase());
+}
+
 function annotateResultDelivery(status, written) {
   if (!written || written.length === 0) {
     return;
@@ -238,6 +242,7 @@ function resultArchiveToWritten(status, written) {
 
 module.exports = {
   isTerminalSessionState,
+  isPauseSessionState,
   annotateResultDelivery,
   appendProgressNote,
   heartbeatPhase,

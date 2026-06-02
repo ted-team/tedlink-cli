@@ -16,6 +16,7 @@ const {
 } = require("./output");
 const {
   isTerminalSessionState,
+  isPauseSessionState,
   annotateResultDelivery,
   buildSkillResult,
   printLocalSummary,
@@ -26,6 +27,7 @@ const {
 
 const SESSION_FILE_NAME = ".session";
 const LOCAL_POLL_INTERVAL_MS = 5000;
+let currentStreamSection = "";
 
 function printHelp() {
   console.log(`TedLink CLI
@@ -363,6 +365,7 @@ async function runSubmitOnly(args, prompt) {
     sharedFiles,
     String(workspaceDir),
     false,
+    args.output === "text" && !args.quiet ? printStreamEvent : null,
   );
   const initialStatus = {
     session: { ...session.session },
@@ -432,6 +435,18 @@ async function runLocalSession(args, prompt) {
       await finishLocalSession(args, status, workspaceDir, sessionPath);
       return;
     }
+    if (isPauseSessionState(status.session.state)) {
+      if (args.output === "text" && !args.quiet) {
+        console.log();
+        console.log("TedLink paused");
+        console.log(`  state: ${status.session.state}`);
+        console.log("  run tedlink again with a follow-up prompt to continue this session");
+      } else if (args.output === "json") {
+        const result = buildSkillResult(status, [], workspaceDir);
+        console.log(JSON.stringify(result, null, 2));
+      }
+      return;
+    }
     await sleep(LOCAL_POLL_INTERVAL_MS);
   }
 }
@@ -469,6 +484,7 @@ async function submitLocalSession(args, prompt, workspaceDir, sessionPath) {
     sharedFiles,
     String(workspaceDir),
     false,
+    args.output === "text" && !args.quiet ? printStreamEvent : null,
   );
   const outputDir = args.output_dir
     ? String(resolvePath(expanduserPath(args.output_dir)))
@@ -576,6 +592,56 @@ async function downloadAndUnpackResultArchive(decisionUrl, status, outputDir) {
     targetDir,
   );
   return unpackResultArchive(outputDir, archive);
+}
+
+function printStreamEvent(event) {
+  if (!event || typeof event !== "object") {
+    return;
+  }
+  if (["plan", "tool", "task", "subtask", "completed", "failed"].includes(event.event)) {
+    const content = String(event.content || "");
+    printStreamSection(event.event);
+    if (content) {
+      process.stdout.write(content);
+    }
+    return;
+  }
+  if (event.event === "status_update") {
+    console.log();
+    console.log(`Status: ${event.status || ""} ${event.progress ?? ""}`.trim());
+    return;
+  }
+  if (event.event === "tool_output") {
+    const content = String(event.content || "").trim();
+    if (content) {
+      console.log();
+      console.log(content);
+    }
+    return;
+  }
+  if (event.event === "error") {
+    const content = String(event.content || "").trim();
+    if (content) {
+      console.log();
+      console.log(`Error: ${content}`);
+    }
+  }
+}
+
+function printStreamSection(section) {
+  if (section === currentStreamSection) {
+    return;
+  }
+  currentStreamSection = section;
+  const label = {
+    plan: "Plan",
+    tool: "Tool",
+    task: "Task",
+    subtask: "Subtask",
+    completed: "Completed",
+    failed: "Failed",
+  }[section] || section;
+  process.stdout.write(`\n${label}\n`);
 }
 
 function localSessionPath(workspaceDir) {

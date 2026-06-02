@@ -1,6 +1,6 @@
 "use strict";
 
-const { httpRequest } = require("./http");
+const { httpRequest, httpStreamSseEvents } = require("./http");
 const {
   normalizeRequestResponse,
   normalizeSessionStatus,
@@ -21,6 +21,7 @@ function submitRequest(
   sharedFiles,
   localWorkspaceDir,
   clientHeartbeatRequired,
+  onEvent = null,
 ) {
   const payload = buildSubmitPayload(
     prompt,
@@ -39,12 +40,15 @@ function submitRequest(
     ? recoverSession(decisionUrl, sessionId, mac)
     : createSession(decisionUrl, user, mac);
   return sessionPromise
-    .then((session) => orchestrateChat(
+    .then((session) => executeChat(
       decisionUrl,
       session.session_id,
       prompt,
       payload.api_key,
       payload.base_url,
+      payload.model,
+      null,
+      onEvent,
     )
       .then((streamEvents) => normalizeV3SubmitResponse({
         ...payload,
@@ -73,6 +77,7 @@ function buildSubmitPayload(
     mac,
     base_url: envValue("ANTHROPIC_BASE_URL") || undefined,
     api_key: envValue("ANTHROPIC_AUTH_TOKEN") || envValue("ANTHROPIC_API_KEY") || undefined,
+    model: envValue("ANTHROPIC_MODEL") || "claude-sonnet-4-6",
     auto_plan: autoPlan,
     auto_dispatch: autoDispatch,
     deliver_result_files: deliverResultFiles,
@@ -122,19 +127,20 @@ function recoverSession(decisionUrl, sessionId, mac) {
   ).then(parseJsonResponse("/api/v3/session/recover"));
 }
 
-async function orchestrateChat(
+async function executeChat(
   decisionUrl,
   sessionId,
   prompt,
   anthropicApiKey,
   anthropicBaseUrl,
+  anthropicModel,
   skillCodeBlock = null,
   onEvent = null,
 ) {
-  const response = await httpRequest(
+  return await httpStreamSseEvents(
     decisionUrl,
     "POST",
-    "/api/v3/orchestrate/chat",
+    "/api/v3/execute/chat",
     "application/json",
     Buffer.from(JSON.stringify({
       session_id: sessionId,
@@ -142,13 +148,10 @@ async function orchestrateChat(
       skill_code_block: skillCodeBlock,
       anthropic_api_key: anthropicApiKey || "",
       anthropic_base_url: anthropicBaseUrl || "",
+      anthropic_model: anthropicModel || "claude-sonnet-4-6",
     })),
+    onEvent,
   );
-  const events = parseSseEvents(response);
-  if (onEvent) {
-    events.forEach(onEvent);
-  }
-  return events;
 }
 
 function sessionStatus(decisionUrl, sessionId, clientHeartbeat, refresh, mac = null) {
@@ -231,6 +234,10 @@ function parseSseEvents(response) {
 }
 
 function normalizeV3SubmitResponse(payload, streamEvents) {
+  const errorEvent = streamEvents.find((event) => event.event === "error");
+  if (errorEvent) {
+    throw new Error(String(errorEvent.content || "tedlink-server execution failed"));
+  }
   const finalStatus = [...streamEvents]
     .reverse()
     .find((event) => event.event === "status_update");
@@ -238,7 +245,7 @@ function normalizeV3SubmitResponse(payload, streamEvents) {
     session: normalizeSessionInfo({
       session_id: payload.session_id,
       prompt: payload.prompt,
-      state: finalStatus ? String(finalStatus.status || "WAITING_EXECUTOR").toLowerCase() : "waiting_executor",
+      state: finalStatus ? String(finalStatus.status || "EXECUTING").toLowerCase() : "executing",
       workspace: normalizeWorkspaceInfo({
         session_dir: payload.server_workspace_path || "",
         workspace_dir: payload.server_workspace_path || payload.local_workspace_dir || "",
@@ -255,12 +262,13 @@ function normalizeV3SessionStatus(value) {
   const sessionId = String(value.session_id || "");
   const state = String(value.status || "").toLowerCase();
   const progress = Number(value.progress || 0);
+  const progressSummary = progress > 0 ? `${state || "unknown"} ${progress}%` : (state || "unknown");
   const history = Array.isArray(value.history_summary) ? value.history_summary : [];
   const planEvents = history
     .filter((item) => item.role === "assistant" && item.content)
     .map((item) => ({
       time: String(item.created_at || ""),
-      actor: "orchestrator",
+      actor: "executor",
       level: "info",
       action: "plan",
       message: String(item.content || ""),
@@ -282,13 +290,13 @@ function normalizeV3SessionStatus(value) {
         state: state === "completed" ? "completed" : "running",
         stage: state,
         owner_node: "tedlink-server",
-        message: `${state || "unknown"} ${progress}%`,
+        message: progressSummary,
         artifacts: value.artifact_dir ? [value.artifact_dir] : [],
       },
     ],
     process: {
       state,
-      summary: `${state || "unknown"} ${progress}%`,
+      summary: progressSummary,
       total: 1,
       completed: state === "completed" ? 1 : 0,
       failed: ["failed", "cancelled"].includes(state) ? 1 : 0,
@@ -376,8 +384,9 @@ module.exports = {
   buildSubmitPayload: buildSubmitPayloadForTest,
   createSession,
   recoverSession,
-  orchestrateChat,
+  executeChat,
   parseSseEvents,
+  normalizeV3SubmitResponse,
   pollSession,
   sessionStatus,
   downloadResultArchive,

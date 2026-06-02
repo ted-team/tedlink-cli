@@ -15,6 +15,7 @@ export TEDLINK_BASE_URL=http://127.0.0.1:8000
 export TEDLINK_AUTH_TOKEN=replace-me
 export ANTHROPIC_AUTH_TOKEN=sk-ant-...
 export ANTHROPIC_BASE_URL=https://api.anthropic.com
+export ANTHROPIC_MODEL=claude-sonnet-4-6
 ./src/main.js --prompt "run simulation" --dir .
 ```
 
