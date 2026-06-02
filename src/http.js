@@ -10,7 +10,7 @@ function httpRequest(decisionUrl, method, pathSuffix, contentType = null, body =
     Host: `${host}:${port}`,
     Connection: "close",
   };
-  const token = envValue("TEDLINK_TOKEN");
+  const token = envValue("TEDLINK_AUTH_TOKEN") || envValue("TEDLINK_TOKEN");
   if (token) {
     headers.Authorization = `Bearer ${token}`;
   }

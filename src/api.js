@@ -35,13 +35,22 @@ function submitRequest(
     localWorkspaceDir,
     clientHeartbeatRequired,
   );
-  return httpRequest(
-    decisionUrl,
-    "POST",
-    "/requests/submit",
-    "application/json",
-    Buffer.from(JSON.stringify(payload)),
-  ).then((response) => parseSubmitResponse(response, prompt));
+  const sessionPromise = sessionId
+    ? recoverSession(decisionUrl, sessionId, mac)
+    : createSession(decisionUrl, user, mac);
+  return sessionPromise
+    .then((session) => orchestrateChat(
+      decisionUrl,
+      session.session_id,
+      prompt,
+      payload.api_key,
+      payload.base_url,
+    )
+      .then((streamEvents) => normalizeV3SubmitResponse({
+        ...payload,
+        session_id: session.session_id,
+        server_workspace_path: session.workspace_path || "",
+      }, streamEvents)));
 }
 
 function buildSubmitPayload(
@@ -93,22 +102,68 @@ async function pollSession(decisionUrl, sessionId, timeoutMs, pollIntervalMs, on
   throw new Error("session stream ended before terminal status");
 }
 
-function sessionStatus(decisionUrl, sessionId, clientHeartbeat, refresh) {
-  const heartbeat = clientHeartbeat ? "1" : "0";
-  const refreshValue = refresh ? "1" : "0";
-  const encoded = encodeURIComponent(sessionId);
+function createSession(decisionUrl, user, mac) {
   return httpRequest(
     decisionUrl,
-    "GET",
-    `/sessions/status?session_id=${encoded}&refresh=${refreshValue}&client_heartbeat=${heartbeat}`,
-  ).then(parseSessionStatusResponse);
+    "POST",
+    "/api/v3/session/create",
+    "application/json",
+    Buffer.from(JSON.stringify({ username: user, mac_address: mac })),
+  ).then(parseJsonResponse("/api/v3/session/create"));
 }
 
-function downloadResultArchive(decisionUrl, sessionId, downloadToken) {
+function recoverSession(decisionUrl, sessionId, mac) {
+  return httpRequest(
+    decisionUrl,
+    "POST",
+    "/api/v3/session/recover",
+    "application/json",
+    Buffer.from(JSON.stringify({ session_id: sessionId, mac_address: mac })),
+  ).then(parseJsonResponse("/api/v3/session/recover"));
+}
+
+async function orchestrateChat(
+  decisionUrl,
+  sessionId,
+  prompt,
+  anthropicApiKey,
+  anthropicBaseUrl,
+  skillCodeBlock = null,
+  onEvent = null,
+) {
+  const response = await httpRequest(
+    decisionUrl,
+    "POST",
+    "/api/v3/orchestrate/chat",
+    "application/json",
+    Buffer.from(JSON.stringify({
+      session_id: sessionId,
+      prompt,
+      skill_code_block: skillCodeBlock,
+      anthropic_api_key: anthropicApiKey || "",
+      anthropic_base_url: anthropicBaseUrl || "",
+    })),
+  );
+  const events = parseSseEvents(response);
+  if (onEvent) {
+    events.forEach(onEvent);
+  }
+  return events;
+}
+
+function sessionStatus(decisionUrl, sessionId, clientHeartbeat, refresh, mac = null) {
+  void clientHeartbeat;
+  void refresh;
+  const sessionMac = mac || envValue("TEDLINK_MAC") || "unknown_mac";
+  return recoverSession(decisionUrl, sessionId, sessionMac)
+    .then((value) => normalizeV3SessionStatus(value));
+}
+
+function downloadResultArchive(decisionUrl, sessionId, targetDir) {
   return httpRequest(
     decisionUrl,
     "GET",
-    `/sessions/result-archive?session_id=${encodeURIComponent(sessionId)}&download_token=${encodeURIComponent(downloadToken)}`,
+    `/api/v3/sync/download?session_id=${encodeURIComponent(sessionId)}&target_dir=${encodeURIComponent(targetDir)}`,
   );
 }
 
@@ -127,7 +182,7 @@ function cancelSession(decisionUrl, sessionId, reason) {
 }
 
 function isTerminalState(state) {
-  return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(state || "").trim());
+  return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(state || "").trim().toLowerCase());
 }
 
 function envValue(name) {
@@ -142,6 +197,119 @@ function envValue(name) {
 async function sessionStatusJson(decisionUrl, pathSuffix) {
   const response = await httpRequest(decisionUrl, "GET", pathSuffix);
   return JSON.parse(response.toString("utf8"));
+}
+
+function parseJsonResponse(endpoint) {
+  return (response) => {
+    try {
+      return JSON.parse(Buffer.from(response).toString("utf8"));
+    } catch {
+      throw new Error(`invalid JSON response from ${endpoint}: ${responsePreview(response)}`);
+    }
+  };
+}
+
+function parseSseEvents(response) {
+  const text = Buffer.from(response).toString("utf8");
+  const events = [];
+  for (const block of text.split(/\r?\n\r?\n/)) {
+    const dataLines = block
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart());
+    if (dataLines.length === 0) {
+      continue;
+    }
+    const raw = dataLines.join("\n");
+    try {
+      events.push(JSON.parse(raw));
+    } catch {
+      events.push({ event: "raw", content: raw });
+    }
+  }
+  return events;
+}
+
+function normalizeV3SubmitResponse(payload, streamEvents) {
+  const finalStatus = [...streamEvents]
+    .reverse()
+    .find((event) => event.event === "status_update");
+  return normalizeRequestResponse({
+    session: normalizeSessionInfo({
+      session_id: payload.session_id,
+      prompt: payload.prompt,
+      state: finalStatus ? String(finalStatus.status || "WAITING_EXECUTOR").toLowerCase() : "waiting_executor",
+      workspace: normalizeWorkspaceInfo({
+        session_dir: payload.server_workspace_path || "",
+        workspace_dir: payload.server_workspace_path || payload.local_workspace_dir || "",
+      }),
+      metadata: {
+        prompt_summary: payload.prompt,
+        tedlink_v3_events: streamEvents,
+      },
+    }),
+  });
+}
+
+function normalizeV3SessionStatus(value) {
+  const sessionId = String(value.session_id || "");
+  const state = String(value.status || "").toLowerCase();
+  const progress = Number(value.progress || 0);
+  const history = Array.isArray(value.history_summary) ? value.history_summary : [];
+  const planEvents = history
+    .filter((item) => item.role === "assistant" && item.content)
+    .map((item) => ({
+      time: String(item.created_at || ""),
+      actor: "orchestrator",
+      level: "info",
+      action: "plan",
+      message: String(item.content || ""),
+    }));
+  return normalizeSessionStatus({
+    session: {
+      session_id: sessionId,
+      prompt: firstUserHistoryContent(history),
+      state,
+      workspace: {
+        session_dir: value.workspace_path || "",
+        workspace_dir: value.workspace_path || "",
+      },
+      metadata: {},
+    },
+    todos: [
+      {
+        title: "tedlink-server workflow",
+        state: state === "completed" ? "completed" : "running",
+        stage: state,
+        owner_node: "tedlink-server",
+        message: `${state || "unknown"} ${progress}%`,
+        artifacts: value.artifact_dir ? [value.artifact_dir] : [],
+      },
+    ],
+    process: {
+      state,
+      summary: `${state || "unknown"} ${progress}%`,
+      total: 1,
+      completed: state === "completed" ? 1 : 0,
+      failed: ["failed", "cancelled"].includes(state) ? 1 : 0,
+    },
+    activity: planEvents,
+    result_files: value.artifact_dir ? [{ path: value.artifact_dir }] : [],
+    result_archive: value.artifact_dir
+      ? {
+          format: "tar.gz",
+          content_type: "application/octet-stream",
+          download_path: "/api/v3/sync/download",
+          download_token: value.artifact_dir,
+          file_count: 1,
+        }
+      : null,
+  });
+}
+
+function firstUserHistoryContent(history) {
+  const entry = history.find((item) => item.role === "user" && item.content);
+  return entry ? String(entry.content || "") : "";
 }
 
 function parseSessionStatusResponse(response) {
@@ -206,6 +374,10 @@ async function sleep(ms) {
 module.exports = {
   submitRequest,
   buildSubmitPayload: buildSubmitPayloadForTest,
+  createSession,
+  recoverSession,
+  orchestrateChat,
+  parseSseEvents,
   pollSession,
   sessionStatus,
   downloadResultArchive,

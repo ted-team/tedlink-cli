@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const zlib = require("zlib");
 
 function expanduserPath(input) {
   const text = String(input || "");
@@ -25,6 +26,9 @@ function resolvePath(input) {
 }
 
 function unpackResultArchive(root, archive) {
+  if (isGzipArchive(archive)) {
+    return unpackResultArchive(root, zlib.gunzipSync(archive));
+  }
   const written = [];
   let offset = 0;
   while (offset + 512 <= archive.length) {
@@ -57,6 +61,10 @@ function unpackResultArchive(root, archive) {
     offset = dataEnd + ((512 - (size % 512)) % 512);
   }
   return written;
+}
+
+function isGzipArchive(bytes) {
+  return bytes && bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
 }
 
 function resultOutputDir(workspaceDir, summary, sessionId) {

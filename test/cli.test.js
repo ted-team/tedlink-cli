@@ -4,11 +4,12 @@ const assert = require("assert").strict;
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const zlib = require("zlib");
 
 const { sanitizeResultFolderComponent, resultOutputDir, unpackResultArchive, normalizeMacIdentity } = require("../src/output");
 const { renderStatusLine } = require("../src/status");
 const { taskLine } = require("../src/tasks");
-const { parseSubmitResponse } = require("../src/api");
+const { parseSubmitResponse, parseSseEvents } = require("../src/api");
 const { isTerminalSessionState } = require("../src/flow");
 const { parseArgs } = require("../src/cli");
 
@@ -58,6 +59,26 @@ runTest("unpacks tar archives safely", () => {
   const written = unpackResultArchive(root, archive);
   assert.deepEqual(written, ["artifacts/report.md"]);
   assert.equal(fs.readFileSync(path.join(root, "artifacts", "report.md"), "utf8"), "ok");
+});
+
+runTest("unpacks gzip tar archives from tedlink-server", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "tedlink-cli-gz-"));
+  const archive = zlib.gzipSync(testTarArchive([["output_plots/result.txt", Buffer.from("ok")]]));
+  const written = unpackResultArchive(root, archive);
+  assert.deepEqual(written, ["output_plots/result.txt"]);
+  assert.equal(fs.readFileSync(path.join(root, "output_plots", "result.txt"), "utf8"), "ok");
+});
+
+runTest("parses tedlink-server SSE data events", () => {
+  const events = parseSseEvents(Buffer.from([
+    'data: {"event":"plan","content":"step"}',
+    "",
+    'data: {"event":"status_update","status":"WAITING_EXECUTOR","progress":30}',
+    "",
+  ].join("\n")));
+  assert.equal(events.length, 2);
+  assert.equal(events[0].event, "plan");
+  assert.equal(events[1].progress, 30);
 });
 
 runTest("reads decision url from environment only", () => {

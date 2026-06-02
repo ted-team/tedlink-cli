@@ -309,14 +309,16 @@ function effectiveUploadWorkspace(args) {
 }
 
 async function runStatus(args, sessionId) {
+  const mac = normalizeMacIdentity(args.mac || defaultMac());
   let status = await sessionStatus(
     args.decision_url,
     sessionId,
     false,
     args.refresh_status,
+    mac,
   );
   if (effectiveDeliverResultFiles(args) && !args.refresh_status && isTerminalSessionState(status.session.state)) {
-    status = await sessionStatus(args.decision_url, sessionId, false, true);
+    status = await sessionStatus(args.decision_url, sessionId, false, true, mac);
   }
   const workspaceDir = resolvePath(expanduserPath(args.dir));
   const outputDir = args.output_dir
@@ -387,6 +389,7 @@ async function runSubmitOnly(args, prompt) {
 async function runLocalSession(args, prompt) {
   const submittedAt = Date.now();
   const workspaceDir = resolvePath(expanduserPath(args.dir));
+  const mac = normalizeMacIdentity(args.mac || defaultMac());
   const sessionPath = localSessionPath(workspaceDir);
   let localSession = await readLocalSession(sessionPath);
   if (localSession) {
@@ -417,7 +420,7 @@ async function runLocalSession(args, prompt) {
   }
 
   while (true) {
-    let status = await sessionStatus(args.decision_url, localSession.session_id, false, true);
+    let status = await sessionStatus(args.decision_url, localSession.session_id, false, true, mac);
     if (!status.session.prompt || !status.session.prompt.trim()) {
       status.session.prompt = localSession.prompt;
     }
@@ -556,20 +559,21 @@ async function resolvePrompt(args) {
 }
 
 async function downloadAndUnpackResultArchive(decisionUrl, status, outputDir) {
-  if (!status.result_files || status.result_files.length === 0) {
+  const resultArchive = status.result_archive;
+  const targetDir = resultArchive && String(resultArchive.download_token || "").trim();
+  if ((!status.result_files || status.result_files.length === 0) && !targetDir) {
     return [];
   }
-  const resultArchive = status.result_archive;
   if (!resultArchive) {
     throw new Error("missing result archive metadata in terminal status");
   }
-  if (!String(resultArchive.download_token || "").trim()) {
-    throw new Error("missing result archive download token in terminal status");
+  if (!targetDir) {
+    throw new Error("missing result archive target_dir in terminal status");
   }
   const archive = await downloadResultArchive(
     decisionUrl,
     status.session.session_id,
-    resultArchive.download_token,
+    targetDir,
   );
   return unpackResultArchive(outputDir, archive);
 }

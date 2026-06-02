@@ -6,7 +6,7 @@ const { formatElapsed } = require("./output");
 const { normalizeSessionStatus } = require("./models");
 
 function isTerminalSessionState(value) {
-  return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(value || "").trim());
+  return ["completed", "completed_with_warnings", "failed", "cancelled"].includes(String(value || "").trim().toLowerCase());
 }
 
 function annotateResultDelivery(status, written) {
